@@ -1,7 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use clap::Parser;
@@ -20,14 +20,19 @@ fn main() {
     println!("{:?}", cli.file_list);
 
     for file in cli.file_list {
-        //TODO: file type lookup
-        let mut delim = "#";
-
-        if let Some(delimiter) = cli.delimiter.as_deref() {
-            delim = delimiter;
-        }
-
         let file_path = Path::new(&file);
+
+        let delim = cli
+            .delimiter
+            .as_deref()
+            .or_else(|| {
+                file_path
+                    .extension()
+                    .and_then(|str| str.to_str())
+                    .map(|str| auto_detect_delim(str))
+            })
+            .unwrap_or("//");
+
         let file = match OpenOptions::new()
             .read(true)
             .write(true)
@@ -46,7 +51,7 @@ fn main() {
         let mut cur_string = String::new();
         let mut line = reader.read_line(&mut cur_string).unwrap();
 
-        //this is start position of comment block, end position, then the list of strings
+        // This is start position of comment block, end position, then the list of strings
         let mut words_list: Vec<(u64, u64, Vec<String>)> = Vec::new();
         words_list.push((0, 0, Vec::new()));
 
@@ -60,7 +65,6 @@ fn main() {
             if set_lines(
                 delim,
                 &mut cur_string,
-                line,
                 &mut reader,
                 &mut words_list[num_sort_blocks],
             ) {
@@ -71,7 +75,7 @@ fn main() {
             line = reader.read_line(&mut cur_string).unwrap();
         }
 
-        //end pos was never set, so we never hit the end of the sort-lines block
+        // End pos was never set, so we never hit the end of the sort-lines block
 
         let mut writer = BufWriter::new(&file);
 
@@ -104,7 +108,6 @@ fn insertion_sort(list: &mut Vec<String>, insert_string: String) {
 fn set_lines(
     delim: &str,
     current_string: &mut String,
-    mut line: usize,
     reader: &mut BufReader<&File>,
     data: &mut (u64, u64, Vec<String>),
 ) -> bool {
@@ -113,11 +116,11 @@ fn set_lines(
 
         // Clear the first comment line
         current_string.clear();
-        line = reader.read_line(current_string).unwrap();
+        let mut line = reader.read_line(current_string).unwrap();
 
-        //Iterate until we hit the end of the sort-lines block
+        // Iterate until we hit the end of the sort-lines block
         while current_string.trim_start() != delim.to_owned() + " sort-lines: end\n" {
-            //Unwind to the begging of the sort-line block, as we have reached EOF without and end
+            // Unwind to the beginning of the sort-line block, as we have reached EOF without an end
             if line == 0 {
                 let _ = reader.seek(SeekFrom::Start(data.0 + 1));
                 return true;
@@ -131,4 +134,16 @@ fn set_lines(
         return true;
     }
     false
+}
+
+fn auto_detect_delim(extension: &str) -> &str {
+    match extension.to_lowercase().as_str() {
+        "sh" | "bash" | "fish" | "py" | "rb" | "pl" | "ex" => "#",
+        "lua" | "hs" | "lhs" | "sql" => "--",
+        "ini" | "asm" => ";",
+        "bat" | "cmd" => "@REM",
+
+        // Most languages use `//` for comments
+        _ => "//",
+    }
 }

@@ -1,9 +1,9 @@
+use clap::{Parser, ValueEnum};
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write},
     path::Path,
 };
-use clap::{Parser, ValueEnum};
 
 #[derive(Parser)]
 #[command(arg_required_else_help(true))]
@@ -73,7 +73,8 @@ fn main() -> Result<(), Error> {
                 if had_changes {
                     println!("{}", file);
                 } else {
-                    println!("\x1b[30m{}\x1b[0m", file,);
+                    //prints in grey text
+                    println!("\x1b[30m{}\x1b[0m", file);
                 }
             }
             Err(e) => {
@@ -94,7 +95,7 @@ fn sort_lines(delimiter: &Option<String>, file: &str) -> Result<bool, Error> {
             file_path
                 .extension()
                 .and_then(|str| str.to_str())
-                .map(|str| auto_detect_delim(str))
+                .map(auto_detect_delim)
         })
         .unwrap_or("//");
 
@@ -197,10 +198,13 @@ fn set_lines(
 
 fn auto_detect_delim(extension: &str) -> &str {
     match extension.to_lowercase().as_str() {
-        "sh" | "bash" | "fish" | "py" | "rb" | "pl" | "ex" => "#",
+        "sh" | "bash" | "fish" | "nu" => "#",
+        "py" | "rb" | "pl" | "ex" | "nix" | "toml" | "yaml" => "#",
         "lua" | "hs" | "lhs" | "sql" => "--",
-        "ini" | "asm" => ";",
+        "ini" | "asm" | "s" => ";",
         "bat" | "cmd" => "@REM",
+        "c" | "c++" | "cpp" => "//",
+        "js" | "ts" => "//",
 
         // Most languages use `//` for comments
         _ => "//",

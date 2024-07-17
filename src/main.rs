@@ -1,11 +1,9 @@
 use std::{
-    env::args,
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write},
     path::Path,
 };
-
-use clap::{Command, CommandFactory, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 
 #[derive(Parser)]
 #[command(arg_required_else_help(true))]

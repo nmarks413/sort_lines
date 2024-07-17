@@ -1,100 +1,160 @@
 use std::{
+    env::args,
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    io::{BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write},
+    path::Path,
 };
 
-use clap::Parser;
+use clap::{Command, CommandFactory, Parser, ValueEnum};
 
 #[derive(Parser)]
+#[command(arg_required_else_help(true))]
 struct Cli {
-    #[clap(required = true)]
     file_list: Vec<String>,
+    #[arg(short, long, value_enum)]
+    git: Option<GitFiles>,
     #[arg(short, long)]
     delimiter: Option<String>,
 }
 
-fn main() {
-    let cli = Cli::parse();
+#[derive(ValueEnum, Debug, Clone)] // ArgEnum here
+#[clap(rename_all = "kebab_case")]
+enum GitFiles {
+    All,
+    Staged,
+    Modified,
+}
 
-    println!("{:?}", cli.file_list);
-
-    for file in cli.file_list {
-        let file_path = Path::new(&file);
-
-        let delim = cli
-            .delimiter
-            .as_deref()
-            .or_else(|| {
-                file_path
-                    .extension()
-                    .and_then(|str| str.to_str())
-                    .map(|str| auto_detect_delim(str))
-            })
-            .unwrap_or("//");
-
-        let file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .append(false)
-            .open(file_path)
-        {
-            Ok(f) => f,
-            Err(_) => {
-                println!("Could not find {}", file);
-                continue;
-            }
-        };
-
-        let mut reader = BufReader::new(&file);
-
-        let mut cur_string = String::new();
-        let mut line = reader.read_line(&mut cur_string).unwrap();
-
-        // This is start position of comment block, end position, then the list of strings
-        let mut words_list: Vec<(u64, u64, Vec<String>)> = Vec::new();
-        words_list.push((0, 0, Vec::new()));
-
-        let mut num_sort_blocks: usize = 0;
-
-        loop {
-            if line == 0 {
-                break;
-            }
-
-            if set_lines(
-                delim,
-                &mut cur_string,
-                &mut reader,
-                &mut words_list[num_sort_blocks],
-            ) {
-                num_sort_blocks += 1;
-                words_list.push((0, 0, Vec::new()));
-            }
-            cur_string.clear();
-            line = reader.read_line(&mut cur_string).unwrap();
+impl GitFiles {
+    fn cli_args(&self) -> &'static [&'static str] {
+        match self {
+            GitFiles::All => &["ls-files"],
+            GitFiles::Staged => &["diff", "--cached", "--name-only"],
+            GitFiles::Modified => &["ls-files", "--modified"],
         }
+    }
 
-        // End pos was never set, so we never hit the end of the sort-lines block
+    fn get_file_list(&self) -> Result<Vec<String>, Error> {
+        let output = std::process::Command::new("git")
+            .args(self.cli_args())
+            .output()?;
 
-        let mut writer = BufWriter::new(&file);
+        output.stdout.lines().collect()
+    }
 
-        for word_tuple in words_list.iter() {
-            //No end, so dont change anything
-            if word_tuple.1 == 0 {
-                continue;
-            }
-            let _ = writer.seek(SeekFrom::Start(word_tuple.0));
-
-            // println!("{}", words.join(""));
-
-            let _ = writer.write_all(word_tuple.2.join("").as_bytes());
-
-            writer.flush().unwrap();
+    fn display(&self) -> &'static str {
+        match self {
+            GitFiles::All => "git files",
+            GitFiles::Staged => "staged files",
+            GitFiles::Modified => "modified files",
         }
     }
 }
 
+fn main() -> Result<(), Error> {
+    let cli = Cli::parse();
+
+    let file_list = match cli.git {
+        Some(git_files) => {
+            let files = git_files.get_file_list()?;
+            let files = [files, cli.file_list].concat();
+
+            if files.is_empty() {
+                eprintln!("there are no {} to sort", git_files.display());
+                return Ok(());
+            }
+
+            files
+        }
+        None => cli.file_list,
+    };
+
+    for file in &file_list {
+        match sort_lines(&cli.delimiter, file) {
+            Ok(had_changes) => {
+                if had_changes {
+                    println!("{}", file);
+                } else {
+                    println!("\x1b[30m{}\x1b[0m", file,);
+                }
+            }
+            Err(e) => {
+                println!("error sorting {}: {}", file, e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn sort_lines(delimiter: &Option<String>, file: &str) -> Result<bool, Error> {
+    let file_path = Path::new(file);
+
+    let delim = delimiter
+        .as_deref()
+        .or_else(|| {
+            file_path
+                .extension()
+                .and_then(|str| str.to_str())
+                .map(|str| auto_detect_delim(str))
+        })
+        .unwrap_or("//");
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .append(false)
+        .open(file_path)?;
+
+    let mut reader = BufReader::new(&file);
+
+    let mut cur_string = String::new();
+    let mut line = reader.read_line(&mut cur_string)?;
+
+    // This is start position of comment block, end position, then the list of strings
+    let mut words_list: Vec<(u64, u64, Vec<String>)> = Vec::new();
+    words_list.push((0, 0, Vec::new()));
+
+    let mut num_sort_blocks: usize = 0;
+
+    loop {
+        if line == 0 {
+            break;
+        }
+
+        if set_lines(
+            delim,
+            &mut cur_string,
+            &mut reader,
+            &mut words_list[num_sort_blocks],
+        )? {
+            num_sort_blocks += 1;
+            words_list.push((0, 0, Vec::new()));
+        }
+        cur_string.clear();
+        line = reader.read_line(&mut cur_string)?;
+    }
+
+    // End pos was never set, so we never hit the end of the sort-lines block
+
+    let mut writer = BufWriter::new(&file);
+
+    for word_tuple in words_list.iter() {
+        //No end, so dont change anything
+        if word_tuple.1 == 0 {
+            continue;
+        }
+        let _ = writer.seek(SeekFrom::Start(word_tuple.0));
+
+        // println!("{}", words.join(""));
+
+        let _ = writer.write_all(word_tuple.2.join("").as_bytes());
+
+        writer.flush()?;
+    }
+
+    Ok(num_sort_blocks > 0)
+}
 fn insertion_sort(list: &mut Vec<String>, insert_string: String) {
     for i in 0..list.len() {
         if insert_string.to_lowercase() < list[i].to_lowercase() {
@@ -110,30 +170,31 @@ fn set_lines(
     current_string: &mut String,
     reader: &mut BufReader<&File>,
     data: &mut (u64, u64, Vec<String>),
-) -> bool {
+) -> Result<bool, Error> {
     if current_string.trim_start() == delim.to_owned() + " sort-lines: start\n" {
-        data.0 = reader.stream_position().unwrap();
+        data.0 = reader.stream_position()?;
 
         // Clear the first comment line
         current_string.clear();
-        let mut line = reader.read_line(current_string).unwrap();
+        let mut line = reader.read_line(current_string)?;
 
         // Iterate until we hit the end of the sort-lines block
         while current_string.trim_start() != delim.to_owned() + " sort-lines: end\n" {
             // Unwind to the beginning of the sort-line block, as we have reached EOF without an end
             if line == 0 {
                 let _ = reader.seek(SeekFrom::Start(data.0 + 1));
-                return true;
+                return Ok(true);
             }
             insertion_sort(&mut data.2, current_string.clone());
 
             current_string.clear();
-            line = reader.read_line(current_string).unwrap();
+            line = reader.read_line(current_string)?;
         }
         data.1 = reader.stream_position().unwrap();
-        return true;
+        return Ok(true);
     }
-    false
+
+    Ok(false)
 }
 
 fn auto_detect_delim(extension: &str) -> &str {

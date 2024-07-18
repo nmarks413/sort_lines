@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Error, Seek, SeekFrom, Write},
@@ -13,6 +13,8 @@ struct Cli {
     git: Option<GitFiles>,
     #[arg(short, long)]
     delimiter: Option<String>,
+    #[arg(short, long, action=ArgAction::SetFalse)]
+    trim_nonalpha: bool,
 }
 
 #[derive(ValueEnum, Debug, Clone)] // ArgEnum here
@@ -67,8 +69,10 @@ fn main() -> Result<(), Error> {
         None => cli.file_list,
     };
 
+    let trim_alpha = cli.trim_nonalpha;
+
     for file in &file_list {
-        match sort_lines(&cli.delimiter, file) {
+        match sort_lines(&cli.delimiter, file, trim_alpha) {
             Ok(had_changes) => {
                 if had_changes {
                     println!("{}", file);
@@ -86,7 +90,7 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn sort_lines(delimiter: &Option<String>, file: &str) -> Result<bool, Error> {
+fn sort_lines(delimiter: &Option<String>, file: &str, trim: bool) -> Result<bool, Error> {
     let file_path = Path::new(file);
 
     let delim = delimiter
@@ -126,6 +130,7 @@ fn sort_lines(delimiter: &Option<String>, file: &str) -> Result<bool, Error> {
             &mut cur_string,
             &mut reader,
             &mut words_list[num_sort_blocks],
+            trim,
         )? {
             num_sort_blocks += 1;
             words_list.push((0, 0, Vec::new()));
@@ -154,9 +159,15 @@ fn sort_lines(delimiter: &Option<String>, file: &str) -> Result<bool, Error> {
 
     Ok(num_sort_blocks > 0)
 }
-fn insertion_sort(list: &mut Vec<String>, insert_string: String) {
+fn insertion_sort(list: &mut Vec<String>, insert_string: String, trim: bool) {
     for i in 0..list.len() {
-        if insert_string.to_lowercase() < list[i].to_lowercase() {
+        if insert_string
+            .to_lowercase()
+            .trim_start_matches(|c| trim_on_bool(c, trim))
+            < list[i]
+                .to_lowercase()
+                .trim_start_matches(|c| trim_on_bool(c, trim))
+        {
             list.insert(i, insert_string);
             return;
         }
@@ -164,11 +175,20 @@ fn insertion_sort(list: &mut Vec<String>, insert_string: String) {
     list.push(insert_string);
 }
 
+fn trim_on_bool(c: char, trim: bool) -> bool {
+    if trim {
+        true
+    } else {
+        !(c.is_alphanumeric())
+    }
+}
+
 fn set_lines(
     delim: &str,
     current_string: &mut String,
     reader: &mut BufReader<&File>,
     data: &mut (u64, u64, Vec<String>),
+    trim: bool,
 ) -> Result<bool, Error> {
     if current_string.trim_start() == delim.to_owned() + " sort-lines: start\n" {
         data.0 = reader.stream_position()?;
@@ -184,7 +204,7 @@ fn set_lines(
                 let _ = reader.seek(SeekFrom::Start(data.0 + 1));
                 return Ok(true);
             }
-            insertion_sort(&mut data.2, current_string.clone());
+            insertion_sort(&mut data.2, current_string.clone(), trim);
 
             current_string.clear();
             line = reader.read_line(current_string)?;
